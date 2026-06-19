@@ -1,10 +1,11 @@
 import uvicorn
 from fastapi import FastAPI
+from pydantic import BaseModel
 import os
 import base64
 import json
 
-# Importações dos seus 13 arquivos originais de engenharia que você subiu para o GitHub
+# Importações dos seus 13 arquivos originais de engenharia que estão no seu GitHub
 from DISTRIBUICAO import ler_multiplos_arquivos, ConfigLeitura
 from detector_trechos import detectar_trechos, ParametrosDistribuicao
 from distribuidor2 import distribuir, ConfigDistribuicao
@@ -13,9 +14,28 @@ from projeto_json import salvar_projeto
 
 app = FastAPI()
 
+# Modelo de dados que aceita o pacote bruto enviado pelo seu .exe
+class RequisicaoProjeto(BaseModel):
+    nome: str
+    unidade: str
+    em_distancia: bool
+    dist_estaca: float
+    dist_max_bloco: float
+    fatores_hom: dict
+    tipo_projeto: str
+    arquivos: list
+    bota_foras: list = []
+    emprestimos: list = []
+    params: dict = {}
+    config_dist: dict = {}
+    mapeamento: dict = None
+
 @app.post("/processar-projeto")
-async def processar_projeto_nuvem(dados: dict):
+async def processar_projeto_nuvem(payload: RequisicaoProjeto):
     try:
+        # Transforma o payload em um dicionário Python comum para o seu código antigo ler
+        dados = payload.dict()
+        
         # Definição dos caminhos temporários dentro do servidor nuvem
         caminho_excel = "resultado_temporario.xlsx"
         caminho_json = "resultado_temporario.json"
