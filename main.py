@@ -1,11 +1,10 @@
 import uvicorn
-from fastapi import FastAPI
-from pydantic import BaseModel
+from fastapi import FastAPI, Request
 import os
 import base64
 import json
 
-# Importações dos seus 13 arquivos originais de engenharia que estão no seu GitHub
+# Importações dos seus 13 arquivos originais de engenharia
 from DISTRIBUICAO import ler_multiplos_arquivos, ConfigLeitura
 from detector_trechos import detectar_trechos, ParametrosDistribuicao
 from distribuidor2 import distribuir, ConfigDistribuicao
@@ -14,27 +13,11 @@ from projeto_json import salvar_projeto
 
 app = FastAPI()
 
-# Modelo de dados que aceita o pacote bruto enviado pelo seu .exe
-class RequisicaoProjeto(BaseModel):
-    nome: str
-    unidade: str
-    em_distancia: bool
-    dist_estaca: float
-    dist_max_bloco: float
-    fatores_hom: dict
-    tipo_projeto: str
-    arquivos: list
-    bota_foras: list = []
-    emprestimos: list = []
-    params: dict = {}
-    config_dist: dict = {}
-    mapeamento: dict = None
-
 @app.post("/processar-projeto")
-async def processar_projeto_nuvem(payload: RequisicaoProjeto):
+async def processar_projeto_nuvem(request: Request):
     try:
-        # Transforma o payload em um dicionário Python comum para o seu código antigo ler
-        dados = payload.dict()
+        # Recebe qualquer JSON bruto enviado pelo seu .exe sem travar na validação
+        dados = await request.json()
         
         # Definição dos caminhos temporários dentro do servidor nuvem
         caminho_excel = "resultado_temporario.xlsx"
@@ -43,14 +26,14 @@ async def processar_projeto_nuvem(payload: RequisicaoProjeto):
 
         # 1. RECONSTRÓI AS CONFIGURAÇÕES DE LEITURA REPASSADAS PELO .EXE
         config_leitura = ConfigLeitura(
-            unidade=dados["unidade"],
-            em_distancia=dados["em_distancia"],
-            dist_estaca=dados["dist_estaca"],
-            fatores_hom=dados["fatores_hom"]
+            unidade=dados.get("unidade", "estaca"),
+            em_distancia=dados.get("em_distancia", False),
+            dist_estaca=dados.get("dist_estaca", 20.0),
+            fatores_hom=dados.get("fatores_hom", {})
         )
         
         # 2. SEUS ALGORITMOS REAIS EXECUTAM EM SIGILO NA NUVEM RENDER
-        projeto = ler_multiplos_arquivos(dados["arquivos"], config_leitura)
+        projeto = ler_multiplos_arquivos(dados.get("arquivos", []), config_leitura)
         
         resultados = []
         _params = dados.get("params", {})
@@ -65,13 +48,13 @@ async def processar_projeto_nuvem(payload: RequisicaoProjeto):
                 vol_min_aterro_c3=float(_params.get("vol_min_aterro_c3", 500)),
                 pct_max_c3=float(_params.get("pct_max_c3", 50))
             )
-            res = detectar_trechos(ramo, dados.get("mapeamento"), p_obj, unidade=dados["unidade"])
+            res = detectar_trechos(ramo, dados.get("mapeamento"), p_obj, unidade=dados.get("unidade", "estaca"))
             resultados.append(res)
             
         # Executa a distribuição matemática do Stepping-Stone na nuvem
         config_dist_enviada = dados.get("config_dist", {})
         config_dist = ConfigDistribuicao(
-            tipo_projeto=dados["tipo_projeto"],
+            tipo_projeto=dados.get("tipo_projeto", "segmento"),
             usar_dmt_maxima=config_dist_enviada.get("usar_dmt_maxima", False),
             dmt_maxima_km=config_dist_enviada.get("dmt_maxima_km", 999.0),
             dmt_cl=config_dist_enviada.get("dmt_cl", 0.05),
@@ -84,8 +67,8 @@ async def processar_projeto_nuvem(payload: RequisicaoProjeto):
         resultado_final = distribuir(resultados, dados.get("mapeamento"), _params, config_dist)
         
         # 3. GERA OS ARQUIVOS DE SAÍDA DENTRO DO SERVIDOR
-        gerar_excel(resultado_final, resultados, caminho_excel, nome_projeto, fatores_hom=dados["fatores_hom"])
-        salvar_projeto(caminho_json, nome_projeto, dados["arquivos"], config_leitura, dados.get("mapeamento"), _params, config_dist, resultados, resultado_final)
+        gerar_excel(resultado_final, resultados, caminho_excel, nome_projeto, fatores_hom=dados.get("fatores_hom", {}))
+        salvar_projeto(caminho_json, nome_projeto, dados.get("arquivos", []), config_leitura, dados.get("mapeamento"), _params, config_dist, resultados, resultado_final)
 
         # 4. TRANSFORMA OS ARQUIVOS GERADOS EM TEXTO COMPATÍVEL COM A INTERNET
         with open(caminho_excel, "rb") as f_excel:
