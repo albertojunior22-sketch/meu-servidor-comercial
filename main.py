@@ -1,6 +1,5 @@
 import uvicorn
 from fastapi import FastAPI, Request
-from pydantic import BaseModel
 import os
 import sqlite3
 from datetime import datetime
@@ -9,7 +8,7 @@ app = FastAPI()
 DB_FILE = "usuarios.db"
 
 # ---------------------------------------------------------------------------
-# CONFIGURAÇÃO AUTOMÁTICA DO BANCO DE DADOS NA NUVEM
+# CRIAÇÃO AUTOMÁTICA DO BANCO DE DADOS EM ARQUIVO (Não some se o Render reiniciar)
 # ---------------------------------------------------------------------------
 def inicializar_banco():
     conn = sqlite3.connect(DB_FILE)
@@ -23,13 +22,12 @@ def inicializar_banco():
             primeiro_acesso INTEGER
         )
     """)
-    # --- CADASTRE SEUS CLIENTES AQUI (Exemplos iniciais) ---
-    # Formato: (e-mail, senha_provisoria, status, data_expiracao, primeiro_acesso)
-    # primeiro_acesso = 1 significa que ele PRECISA trocar a senha ao logar.
+    # --- CADASTRE OS SEUS CLIENTES AQUI (Use sempre letras minúsculas no e-mail) ---
+    # Formato: ("e-mail", "senha_provisoria", "status", "ano-mes-dia", primeiro_acesso)
+    # primeiro_acesso = 1 significa que ele SERÁ OBRIGADO a mudar a senha ao logar
     clientes_iniciais = [
-        ("engenheiro1@email.com", "Pensare123", "ativo", "2027-06-20", 1),
-        ("cliente2@empresa.com.br", "Mudar123", "ativo", "2027-12-31", 1),
-        ("usuario_atrasado@gmail.com", "Senha999", "bloqueado", "2026-05-01", 0)
+        ("alberto@pensare.com.br", "Pensare123", "ativo", "2027-06-20", 1),
+        ("cliente_teste@gmail.com", "Mudar123", "ativo", "2027-12-31", 1),
     ]
     for cliente in clientes_iniciais:
         cursor.execute("INSERT OR IGNORE INTO usuarios VALUES (?, ?, ?, ?, ?)", cliente)
@@ -38,70 +36,70 @@ def inicializar_banco():
 
 inicializar_banco()
 
-# Modelos de dados para a internet
-class LoginData(BaseModel):
-    email: str
-    senha: str
-
-class NovaSenhaData(BaseModel):
-    email: str
-    senha_antiga: str
-    senha_nova: str
-
 @app.get("/")
 def health_check():
-    return {"status": "gerenciador_de_usuarios_online"}
+    return {"status": "gerenciador_online"}
 
-# 1. ROTA DE LOGIN E VALIDAÇÃO DE PRAZO
+# 1. ROTA DE LOGIN E VALIDAÇÃO DE ASSINATURA
 @app.post("/login")
-async def login_cliente(dados: LoginData):
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute("SELECT senha, status, expiracao, primeiro_acesso FROM usuarios WHERE email = ?", (dados.email.lower().strip(),))
-    usuario = cursor.fetchone()
-    conn.close()
-
-    if not usuario:
-        return {"status": "erro", "mensagem": "E-mail não cadastrado."}
-
-    senha_salva, status, expiracao, primeiro_acesso = usuario
-
-    # Verifica bloqueio manual do administrador
-    if status == "bloqueado":
-        return {"status": "erro", "mensagem": "Acesso suspenso pelo administrador."}
-
-    # Verifica data de expiração da assinatura anual
-    data_exp = datetime.strptime(expiracao, "%Y-%m-%d")
-    if datetime.now() > data_exp:
-        return {"status": "erro", "mensagem": f"Sua assinatura anual venceu em {expiracao}."}
-
-    # Verifica se a senha está correta
-    if dados.senha != senha_salva:
-        return {"status": "erro", "mensagem": "Senha incorreta."}
-
-    # Se for o primeiro acesso, avisa o .exe para abrir a tela de trocar senha
-    if primeiro_acesso == 1:
-        return {"status": "primeiro_acesso", "mensagem": "Por segurança, altere sua senha provisória."}
-
-    return {"status": "sucesso", "mensagem": "Acesso liberado!"}
-
-# 2. ROTA PARA TROCAR A SENHA PROVISÓRIA
-@app.post("/alterar-senha")
-async def alterar_senha(dados: NovaSenhaData):
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute("SELECT senha FROM usuarios WHERE email = ?", (dados.email.lower().strip(),))
-    usuario = cursor.fetchone()
-
-    if not usuario or usuario[0] != dados.senha_antiga:
+async def login_cliente(request: Request):
+    try:
+        dados = await request.json()
+        email = dados.get("email", "").lower().strip()
+        senha = dados.get("senha", "")
+        
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute("SELECT senha, status, expiracao, primeiro_acesso FROM usuarios WHERE email = ?", (email,))
+        usuario = cursor.fetchone()
         conn.close()
-        return {"status": "erro", "mensagem": "Senha antiga incorreta."}
 
-    # Atualiza para a nova senha e desmarca o primeiro acesso
-    cursor.execute("UPDATE usuarios SET senha = ?, primeiro_acesso = 0 WHERE email = ?", (dados.senha_nova, dados.email.lower().strip()))
-    conn.commit()
-    conn.close()
-    return {"status": "sucesso", "mensagem": "Senha atualizada com sucesso!"}
+        if not usuario:
+            return {"status": "erro", "mensagem": "E-mail nao cadastrado."}
+
+        senha_salva, status, expiracao, primeiro_acesso = usuario
+
+        if status == "bloqueado":
+            return {"status": "erro", "mensagem": "Acesso suspenso pelo administrador."}
+
+        data_exp = datetime.strptime(expiracao, "%Y-%m-%d")
+        if datetime.now() > data_exp:
+            return {"status": "erro", "mensagem": f"Assinatura vencida em {expiracao}."}
+
+        if senha != senha_salva:
+            return {"status": "erro", "mensagem": "Senha incorreta."}
+
+        if primeiro_acesso == 1:
+            return {"status": "primeiro_acesso", "mensagem": "Altere sua senha provisoria de primeiro acesso."}
+
+        return {"status": "sucesso", "mensagem": "Acesso liberado!"}
+    except Exception as e:
+        return {"status": "erro", "mensagem": str(e)}
+
+# 2. ROTA PARA ATUALIZAR A SENHA PROVISÓRIA DO CLIENTE
+@app.post("/alterar-senha")
+async def alterar_senha(request: Request):
+    try:
+        dados = await request.json()
+        email = dados.get("email", "").lower().strip()
+        senha_antiga = dados.get("senha_antiga", "")
+        senha_nova = dados.get("senha_nova", "")
+        
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute("SELECT senha FROM usuarios WHERE email = ?", (email,))
+        usuario = cursor.fetchone()
+
+        if not usuario or usuario[0] != senha_antiga:
+            conn.close()
+            return {"status": "erro", "mensagem": "Senha antiga incorreta."}
+
+        cursor.execute("UPDATE usuarios SET senha = ?, primeiro_acesso = 0 WHERE email = ?", (senha_nova, email))
+        conn.commit()
+        conn.close()
+        return {"status": "sucesso", "mensagem": "Senha atualizada com sucesso!"}
+    except Exception as e:
+        return {"status": "erro", "mensagem": str(e)}
 
 if __name__ == "__main__":
     import uvicorn
