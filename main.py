@@ -5,6 +5,7 @@ import os
 import base64
 import json
 
+# Importações dos seus 13 arquivos de engenharia
 from DISTRIBUICAO import ler_multiplos_arquivos, ConfigLeitura
 from detector_trechos import detectar_trechos, ParametrosDistribuicao
 from distribuidor2 import distribuir, ConfigDistribuicao
@@ -13,17 +14,20 @@ from projeto_json import salvar_projeto
 
 app = FastAPI()
 
+# --- NOVA ROTA OBRIGATÓRIA PARA O RENDER NÃO DAR ERRO ---
+@app.get("/")
+def pagina_inicial_health_check():
+    return {"status": "servidor_online_e_seguro"}
+# --------------------------------------------------------
+
 @app.post("/processar-projeto")
 async def processar_projeto_nuvem(config: str = Form(...), files: List[UploadFile] = File(...)):
     try:
-        # Converte o texto das configurações de volta para dicionário
         dados = json.loads(config)
-        
         caminho_excel = "resultado_temporario.xlsx"
         caminho_json = "resultado_temporario.json"
         nome_projeto = dados.get("nome", "Distribuicao")
 
-        # Salva temporariamente os arquivos enviados pelo cliente no disco do servidor
         caminhos_locais_servidor = []
         for file in files:
             caminho_salvar = file.filename
@@ -32,7 +36,6 @@ async def processar_projeto_nuvem(config: str = Form(...), files: List[UploadFil
                 f.write(conteudo)
             caminhos_locais_servidor.append(caminho_salvar)
 
-        # 1. Configura a leitura usando os arquivos reais que agora estão no servidor
         config_leitura = ConfigLeitura(
             unidade=dados.get("unidade", "estaca"),
             em_distancia=dados.get("em_distancia", False),
@@ -40,10 +43,8 @@ async def processar_projeto_nuvem(config: str = Form(...), files: List[UploadFil
             fatores_hom=dados.get("fatores_hom", {})
         )
         
-        # Passa a lista de arquivos salvos no servidor para o seu script calcular
         projeto = ler_multiplos_arquivos(caminhos_locais_servidor, config_leitura)
         
-        # [SUA LÓGICA ORIGINAL DE ENGENHARIA DE DETECÇÃO E STEPPING-STONE]
         resultados = []
         _params = dados.get("params", {})
         for ramo in projeto.ramos:
@@ -65,17 +66,14 @@ async def processar_projeto_nuvem(config: str = Form(...), files: List[UploadFil
         )
         resultado_final = distribuir(resultados, dados.get("mapeamento"), _params, config_dist)
         
-        # Gera os arquivos finais
         gerar_excel(resultado_final, resultados, caminho_excel, nome_projeto, fatores_hom=dados.get("fatores_hom", {}))
         salvar_projeto(caminho_json, nome_projeto, caminhos_locais_servidor, config_leitura, dados.get("mapeamento"), _params, config_dist, resultados, resultado_final)
 
-        # Transforma em texto para a transmissão
         with open(caminho_excel, "rb") as f_excel:
             excel_base64 = base64.b64encode(f_excel.read()).decode('utf-8')
         with open(caminho_json, "r", encoding="utf-8") as f_json:
             json_dados_puros = json.load(f_json)
 
-        # Limpa os arquivos temporários do servidor
         if os.path.exists(caminho_excel): os.remove(caminho_excel)
         if os.path.exists(caminho_json): os.remove(caminho_json)
         for arq in caminhos_locais_servidor:
@@ -92,7 +90,5 @@ async def processar_projeto_nuvem(config: str = Form(...), files: List[UploadFil
 
 if __name__ == "__main__":
     import uvicorn
-    # Garante que o Render leia a porta padrão do sistema dele
     port = int(os.environ.get("PORT", 10000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
-
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
