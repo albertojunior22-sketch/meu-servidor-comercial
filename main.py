@@ -1,94 +1,107 @@
 import uvicorn
 from fastapi import FastAPI, Request
+from pydantic import BaseModel
 import os
-import base64
-import json
-
-from DISTRIBUICAO import ler_multiplos_arquivos, ConfigLeitura
-from detector_trechos import detectar_trechos, ParametrosDistribuicao
-from distribuidor2 import distribuir, ConfigDistribuicao
-from gerador_excel import gerar_excel
-from projeto_json import salvar_projeto
+import sqlite3
+from datetime import datetime
 
 app = FastAPI()
+DB_FILE = "usuarios.db"
+
+# ---------------------------------------------------------------------------
+# CONFIGURAÇÃO AUTOMÁTICA DO BANCO DE DADOS NA NUVEM
+# ---------------------------------------------------------------------------
+def inicializar_banco():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS usuarios (
+            email TEXT PRIMARY KEY,
+            senha TEXT,
+            status TEXT,
+            expiracao TEXT,
+            primeiro_acesso INTEGER
+        )
+    """)
+    # --- CADASTRE SEUS CLIENTES AQUI (Exemplos iniciais) ---
+    # Formato: (e-mail, senha_provisoria, status, data_expiracao, primeiro_acesso)
+    # primeiro_acesso = 1 significa que ele PRECISA trocar a senha ao logar.
+    clientes_iniciais = [
+        ("engenheiro1@email.com", "Pensare123", "ativo", "2027-06-20", 1),
+        ("cliente2@empresa.com.br", "Mudar123", "ativo", "2027-12-31", 1),
+        ("usuario_atrasado@gmail.com", "Senha999", "bloqueado", "2026-05-01", 0)
+    ]
+    for cliente in clientes_iniciais:
+        cursor.execute("INSERT OR IGNORE INTO usuarios VALUES (?, ?, ?, ?, ?)", cliente)
+    conn.commit()
+    conn.close()
+
+inicializar_banco()
+
+# Modelos de dados para a internet
+class LoginData(BaseModel):
+    email: str
+    senha: str
+
+class NovaSenhaData(BaseModel):
+    email: str
+    senha_antiga: str
+    senha_nova: str
 
 @app.get("/")
 def health_check():
-    return {"status": "online"}
+    return {"status": "gerenciador_de_usuarios_online"}
 
-@app.post("/processar-projeto")
-async def processar_projeto_nuvem(request: Request):
-    try:
-        # Recebe o pacote como texto JSON simples e limpo da internet
-        dados_recebidos = await request.json()
-        dados = dados_recebidos["config"]
-        
-        caminho_excel = "resultado_temporario.xlsx"
-        caminho_json = "resultado_temporario.json"
-        nome_projeto = dados.get("nome", "Distribuicao")
+# 1. ROTA DE LOGIN E VALIDAÇÃO DE PRAZO
+@app.post("/login")
+async def login_cliente(dados: LoginData):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT senha, status, expiracao, primeiro_acesso FROM usuarios WHERE email = ?", (dados.email.lower().strip(),))
+    usuario = cursor.fetchone()
+    conn.close()
 
-        # Reconstrói os arquivos Excel originais a partir do texto criptografado enviado pelo .exe
-        caminhos_locais_servidor = []
-        for i, arquivo_txt in enumerate(dados_recebidos.get("arquivos_base64", [])):
-            caminho_salvar = f"entrada_{i}.xlsx"
-            conteudo_binario = base64.b64decode(arquivo_txt)
-            with open(caminho_salvar, "wb") as f:
-                f.write(conteudo_binario)
-            caminhos_locais_servidor.append(caminho_salvar)
+    if not usuario:
+        return {"status": "erro", "mensagem": "E-mail não cadastrado."}
 
-        config_leitura = ConfigLeitura(
-            unidade=dados.get("unidade", "estaca"),
-            em_distancia=dados.get("em_distancia", False),
-            dist_estaca=dados.get("dist_estaca", 20.0),
-            fatores_hom=dados.get("fatores_hom", {})
-        )
-        
-        projeto = ler_multiplos_arquivos(caminhos_locais_servidor, config_leitura)
-        
-        # [SUA LÓGICA DE CÁLCULO REAIS DE ENGENHARIA]
-        resultados = []
-        _params = dados.get("params", {})
-        for ramo in projeto.ramos:
-            p_obj = ParametrosDistribuicao(
-                usar_corte3_interno=_params.get("usar_corte3_interno", False),
-                aceita_corte3_externo=_params.get("aceita_corte3_externo", False),
-                usar_corte2_interno=_params.get("usar_corte2_interno", False),
-                aceita_corte2_externo=_params.get("aceita_corte2_externo", False),
-                vol_min_aterro_c3=float(_params.get("vol_min_aterro_c3", 500)),
-                pct_max_c3=float(_params.get("pct_max_c3", 50))
-            )
-            res = detectar_trechos(ramo, dados.get("mapeamento"), p_obj, unidade=dados.get("unidade", "estaca"))
-            resultados.append(res)
-            
-        config_dist = ConfigDistribuicao(
-            tipo_projeto=dados.get("tipo_projeto", "segmento"),
-            usar_dmt_maxima=False, dmt_maxima_km=999.0, dmt_cl=0.05,
-            estrategia="usar_tudo", relacoes=[], bota_foras=[], emprestimos=[]
-        )
-        resultado_final = distribuir(resultados, dados.get("mapeamento"), _params, config_dist)
-        
-        gerar_excel(resultado_final, resultados, caminho_excel, nome_projeto, fatores_hom=dados.get("fatores_hom", {}))
-        salvar_projeto(caminho_json, nome_projeto, caminhos_locais_servidor, config_leitura, dados.get("mapeamento"), _params, config_dist, resultados, resultado_final)
+    senha_salva, status, expiracao, primeiro_acesso = usuario
 
-        with open(caminho_excel, "rb") as f_excel:
-            excel_base64 = base64.b64encode(f_excel.read()).decode('utf-8')
-        with open(caminho_json, "r", encoding="utf-8") as f_json:
-            json_dados_puros = json.load(f_json)
+    # Verifica bloqueio manual do administrador
+    if status == "bloqueado":
+        return {"status": "erro", "mensagem": "Acesso suspenso pelo administrador."}
 
-        # Limpa o lixo
-        if os.path.exists(caminho_excel): os.remove(caminho_excel)
-        if os.path.exists(caminho_json): os.remove(caminho_json)
-        for arq in caminhos_locais_servidor:
-            if os.path.exists(arq): os.remove(arq)
+    # Verifica data de expiração da assinatura anual
+    data_exp = datetime.strptime(expiracao, "%Y-%m-%d")
+    if datetime.now() > data_exp:
+        return {"status": "erro", "mensagem": f"Sua assinatura anual venceu em {expiracao}."}
 
-        return {
-            "status": "sucesso",
-            "json_final": json_dados_puros,
-            "excel_base64": excel_base64
-        }
-        
-    except Exception as e:
-        return {"status": "erro", "detalhes": str(e)}
+    # Verifica se a senha está correta
+    if dados.senha != senha_salva:
+        return {"status": "erro", "mensagem": "Senha incorreta."}
+
+    # Se for o primeiro acesso, avisa o .exe para abrir a tela de trocar senha
+    if primeiro_acesso == 1:
+        return {"status": "primeiro_acesso", "mensagem": "Por segurança, altere sua senha provisória."}
+
+    return {"status": "sucesso", "mensagem": "Acesso liberado!"}
+
+# 2. ROTA PARA TROCAR A SENHA PROVISÓRIA
+@app.post("/alterar-senha")
+async def alterar_senha(dados: NovaSenhaData):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT senha FROM usuarios WHERE email = ?", (dados.email.lower().strip(),))
+    usuario = cursor.fetchone()
+
+    if not usuario or usuario[0] != dados.senha_antiga:
+        conn.close()
+        return {"status": "erro", "mensagem": "Senha antiga incorreta."}
+
+    # Atualiza para a nova senha e desmarca o primeiro acesso
+    cursor.execute("UPDATE usuarios SET senha = ?, primeiro_acesso = 0 WHERE email = ?", (dados.senha_nova, dados.email.lower().strip()))
+    conn.commit()
+    conn.close()
+    return {"status": "sucesso", "mensagem": "Senha atualizada com sucesso!"}
 
 if __name__ == "__main__":
     import uvicorn
