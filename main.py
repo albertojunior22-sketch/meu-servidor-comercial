@@ -1,11 +1,9 @@
 import uvicorn
-from fastapi import FastAPI, Form, File, UploadFile
-from typing import List
+from fastapi import FastAPI, Request
 import os
 import base64
 import json
 
-# Importações dos seus 13 arquivos de engenharia
 from DISTRIBUICAO import ler_multiplos_arquivos, ConfigLeitura
 from detector_trechos import detectar_trechos, ParametrosDistribuicao
 from distribuidor2 import distribuir, ConfigDistribuicao
@@ -14,26 +12,28 @@ from projeto_json import salvar_projeto
 
 app = FastAPI()
 
-# --- NOVA ROTA OBRIGATÓRIA PARA O RENDER NÃO DAR ERRO ---
 @app.get("/")
-def pagina_inicial_health_check():
-    return {"status": "servidor_online_e_seguro"}
-# --------------------------------------------------------
+def health_check():
+    return {"status": "online"}
 
 @app.post("/processar-projeto")
-async def processar_projeto_nuvem(config: str = Form(...), files: List[UploadFile] = File(...)):
+async def processar_projeto_nuvem(request: Request):
     try:
-        dados = json.loads(config)
+        # Recebe o pacote como texto JSON simples e limpo da internet
+        dados_recebidos = await request.json()
+        dados = dados_recebidos["config"]
+        
         caminho_excel = "resultado_temporario.xlsx"
         caminho_json = "resultado_temporario.json"
         nome_projeto = dados.get("nome", "Distribuicao")
 
+        # Reconstrói os arquivos Excel originais a partir do texto criptografado enviado pelo .exe
         caminhos_locais_servidor = []
-        for file in files:
-            caminho_salvar = file.filename
-            conteudo = await file.read()
+        for i, arquivo_txt in enumerate(dados_recebidos.get("arquivos_base64", [])):
+            caminho_salvar = f"entrada_{i}.xlsx"
+            conteudo_binario = base64.b64decode(arquivo_txt)
             with open(caminho_salvar, "wb") as f:
-                f.write(conteudo)
+                f.write(conteudo_binario)
             caminhos_locais_servidor.append(caminho_salvar)
 
         config_leitura = ConfigLeitura(
@@ -45,6 +45,7 @@ async def processar_projeto_nuvem(config: str = Form(...), files: List[UploadFil
         
         projeto = ler_multiplos_arquivos(caminhos_locais_servidor, config_leitura)
         
+        # [SUA LÓGICA DE CÁLCULO REAIS DE ENGENHARIA]
         resultados = []
         _params = dados.get("params", {})
         for ramo in projeto.ramos:
@@ -74,6 +75,7 @@ async def processar_projeto_nuvem(config: str = Form(...), files: List[UploadFil
         with open(caminho_json, "r", encoding="utf-8") as f_json:
             json_dados_puros = json.load(f_json)
 
+        # Limpa o lixo
         if os.path.exists(caminho_excel): os.remove(caminho_excel)
         if os.path.exists(caminho_json): os.remove(caminho_json)
         for arq in caminhos_locais_servidor:
