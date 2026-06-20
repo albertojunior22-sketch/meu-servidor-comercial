@@ -19,7 +19,7 @@ def health_check():
     return {"status": "gerenciador_online"}
 
 # 1. ROTA DE LOGIN E VALIDAÇÃO DE ASSINATURA
-@app.post("/login")
+@app.post("/login/")
 async def login_cliente(request: Request):
     try:
         dados = await request.json()
@@ -49,7 +49,7 @@ async def login_cliente(request: Request):
         return {"status": "erro", "mensagem": str(e)}
 
 # 2. ROTA PARA ATUALIZAR A SENHA PROVISÓRIA DO CLIENTE
-@app.post("/alterar-senha")
+@app.post("/alterar-senha/")
 async def alterar_senha(request: Request):
     try:
         dados = await request.json()
