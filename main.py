@@ -1,10 +1,10 @@
 import uvicorn
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Form, File, UploadFile
+from typing import List
 import os
 import base64
 import json
 
-# Importações dos seus 13 arquivos originais de engenharia
 from DISTRIBUICAO import ler_multiplos_arquivos, ConfigLeitura
 from detector_trechos import detectar_trechos, ParametrosDistribuicao
 from distribuidor2 import distribuir, ConfigDistribuicao
@@ -14,16 +14,25 @@ from projeto_json import salvar_projeto
 app = FastAPI()
 
 @app.post("/processar-projeto")
-async def processar_projeto_nuvem(request: Request):
+async def processar_projeto_nuvem(config: str = Form(...), files: List[UploadFile] = File(...)):
     try:
-        # Lê o JSON bruto exatamente como o seu .exe enviou
-        dados = await request.json()
+        # Converte o texto das configurações de volta para dicionário
+        dados = json.loads(config)
         
         caminho_excel = "resultado_temporario.xlsx"
         caminho_json = "resultado_temporario.json"
         nome_projeto = dados.get("nome", "Distribuicao")
 
-        # 1. Reconstrói as configurações
+        # Salva temporariamente os arquivos enviados pelo cliente no disco do servidor
+        caminhos_locais_servidor = []
+        for file in files:
+            caminho_salvar = file.filename
+            conteudo = await file.read()
+            with open(caminho_salvar, "wb") as f:
+                f.write(conteudo)
+            caminhos_locais_servidor.append(caminho_salvar)
+
+        # 1. Configura a leitura usando os arquivos reais que agora estão no servidor
         config_leitura = ConfigLeitura(
             unidade=dados.get("unidade", "estaca"),
             em_distancia=dados.get("em_distancia", False),
@@ -31,11 +40,12 @@ async def processar_projeto_nuvem(request: Request):
             fatores_hom=dados.get("fatores_hom", {})
         )
         
-        # 2. Executa a engenharia em sigilo na nuvem
-        projeto = ler_multiplos_arquivos(dados.get("arquivos", []), config_leitura)
+        # Passa a lista de arquivos salvos no servidor para o seu script calcular
+        projeto = ler_multiplos_arquivos(caminhos_locais_servidor, config_leitura)
+        
+        # [SUA LÓGICA ORIGINAL DE ENGENHARIA DE DETECÇÃO E STEPPING-STONE]
         resultados = []
         _params = dados.get("params", {})
-        
         for ramo in projeto.ramos:
             p_obj = ParametrosDistribuicao(
                 usar_corte3_interno=_params.get("usar_corte3_interno", False),
@@ -48,33 +58,28 @@ async def processar_projeto_nuvem(request: Request):
             res = detectar_trechos(ramo, dados.get("mapeamento"), p_obj, unidade=dados.get("unidade", "estaca"))
             resultados.append(res)
             
-        config_dist_enviada = dados.get("config_dist", {})
         config_dist = ConfigDistribuicao(
             tipo_projeto=dados.get("tipo_projeto", "segmento"),
-            usar_dmt_maxima=config_dist_enviada.get("usar_dmt_maxima", False),
-            dmt_maxima_km=config_dist_enviada.get("dmt_maxima_km", 999.0),
-            dmt_cl=config_dist_enviada.get("dmt_cl", 0.05),
-            estrategia=config_dist_enviada.get("estrategia", "usar_tudo"),
-            relacoes=[], 
-            bota_foras=dados.get("bota_foras", []),
-            emprestimos=dados.get("emprestimos", [])
+            usar_dmt_maxima=False, dmt_maxima_km=999.0, dmt_cl=0.05,
+            estrategia="usar_tudo", relacoes=[], bota_foras=[], emprestimos=[]
         )
-        
         resultado_final = distribuir(resultados, dados.get("mapeamento"), _params, config_dist)
         
-        # 3. Gera as saídas
+        # Gera os arquivos finais
         gerar_excel(resultado_final, resultados, caminho_excel, nome_projeto, fatores_hom=dados.get("fatores_hom", {}))
-        salvar_projeto(caminho_json, nome_projeto, dados.get("arquivos", []), config_leitura, dados.get("mapeamento"), _params, config_dist, resultados, resultado_final)
+        salvar_projeto(caminho_json, nome_projeto, caminhos_locais_servidor, config_leitura, dados.get("mapeamento"), _params, config_dist, resultados, resultado_final)
 
-        # 4. Transforma em texto para enviar via internet
+        # Transforma em texto para a transmissão
         with open(caminho_excel, "rb") as f_excel:
             excel_base64 = base64.b64encode(f_excel.read()).decode('utf-8')
-            
         with open(caminho_json, "r", encoding="utf-8") as f_json:
             json_dados_puros = json.load(f_json)
 
+        # Limpa os arquivos temporários do servidor
         if os.path.exists(caminho_excel): os.remove(caminho_excel)
         if os.path.exists(caminho_json): os.remove(caminho_json)
+        for arq in caminhos_locais_servidor:
+            if os.path.exists(arq): os.remove(arq)
 
         return {
             "status": "sucesso",
