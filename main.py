@@ -16,15 +16,14 @@ app = FastAPI()
 @app.post("/processar-projeto")
 async def processar_projeto_nuvem(request: Request):
     try:
-        # Recebe qualquer JSON bruto enviado pelo seu .exe sem travar na validação
+        # Lê o JSON bruto exatamente como o seu .exe enviou
         dados = await request.json()
         
-        # Definição dos caminhos temporários dentro do servidor nuvem
         caminho_excel = "resultado_temporario.xlsx"
         caminho_json = "resultado_temporario.json"
         nome_projeto = dados.get("nome", "Distribuicao")
 
-        # 1. RECONSTRÓI AS CONFIGURAÇÕES DE LEITURA REPASSADAS PELO .EXE
+        # 1. Reconstrói as configurações
         config_leitura = ConfigLeitura(
             unidade=dados.get("unidade", "estaca"),
             em_distancia=dados.get("em_distancia", False),
@@ -32,13 +31,11 @@ async def processar_projeto_nuvem(request: Request):
             fatores_hom=dados.get("fatores_hom", {})
         )
         
-        # 2. SEUS ALGORITMOS REAIS EXECUTAM EM SIGILO NA NUVEM RENDER
+        # 2. Executa a engenharia em sigilo na nuvem
         projeto = ler_multiplos_arquivos(dados.get("arquivos", []), config_leitura)
-        
         resultados = []
         _params = dados.get("params", {})
         
-        # Executa a detecção de trechos por ramo em ambiente web seguro
         for ramo in projeto.ramos:
             p_obj = ParametrosDistribuicao(
                 usar_corte3_interno=_params.get("usar_corte3_interno", False),
@@ -51,7 +48,6 @@ async def processar_projeto_nuvem(request: Request):
             res = detectar_trechos(ramo, dados.get("mapeamento"), p_obj, unidade=dados.get("unidade", "estaca"))
             resultados.append(res)
             
-        # Executa a distribuição matemática do Stepping-Stone na nuvem
         config_dist_enviada = dados.get("config_dist", {})
         config_dist = ConfigDistribuicao(
             tipo_projeto=dados.get("tipo_projeto", "segmento"),
@@ -66,22 +62,20 @@ async def processar_projeto_nuvem(request: Request):
         
         resultado_final = distribuir(resultados, dados.get("mapeamento"), _params, config_dist)
         
-        # 3. GERA OS ARQUIVOS DE SAÍDA DENTRO DO SERVIDOR
+        # 3. Gera as saídas
         gerar_excel(resultado_final, resultados, caminho_excel, nome_projeto, fatores_hom=dados.get("fatores_hom", {}))
         salvar_projeto(caminho_json, nome_projeto, dados.get("arquivos", []), config_leitura, dados.get("mapeamento"), _params, config_dist, resultados, resultado_final)
 
-        # 4. TRANSFORMA OS ARQUIVOS GERADOS EM TEXTO COMPATÍVEL COM A INTERNET
+        # 4. Transforma em texto para enviar via internet
         with open(caminho_excel, "rb") as f_excel:
             excel_base64 = base64.b64encode(f_excel.read()).decode('utf-8')
             
         with open(caminho_json, "r", encoding="utf-8") as f_json:
             json_dados_puros = json.load(f_json)
 
-        # Apaga os arquivos temporários criados no servidor
         if os.path.exists(caminho_excel): os.remove(caminho_excel)
         if os.path.exists(caminho_json): os.remove(caminho_json)
 
-        # 5. RETORNA OS DOIS ARQUIVOS PRONTOS VIA REQUISIÇÃO
         return {
             "status": "sucesso",
             "json_final": json_dados_puros,
