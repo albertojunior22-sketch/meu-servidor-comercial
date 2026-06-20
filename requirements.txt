@@ -1,4 +1,5 @@
-fastapi
-uvicorn
-openpyxl
+astapi
+uvicorn[standard]
 python-multipart
+openpyxl
+requests
