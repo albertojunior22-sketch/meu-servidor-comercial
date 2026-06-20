@@ -91,5 +91,7 @@ async def processar_projeto_nuvem(config: str = Form(...), files: List[UploadFil
         return {"status": "erro", "detalhes": str(e)}
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    # O Render exige ler a porta 10000 de forma automática através do ambiente
+    import uvicorn
+    port = int(os.environ.get("PORT", 10000))
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
