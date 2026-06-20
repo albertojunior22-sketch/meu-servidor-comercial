@@ -18,9 +18,6 @@ from datetime import datetime
 from fastapi import FastAPI, UploadFile, File, Form, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-# ---------------------------------------------------------------------------
-# Imports do motor de terraplenagem
-# ---------------------------------------------------------------------------
 from leitor_civil import ConfigLeitura, ler_multiplos_arquivos
 from detector_trechos import detectar_trechos
 from distribuidor2 import distribuir
@@ -41,10 +38,6 @@ except Exception:
 app = FastAPI(title="Pensare Terraplenagem API")
 
 
-# ---------------------------------------------------------------------------
-# Banco simples de usuários para TESTE
-# Em produção, trocar por banco de dados.
-# ---------------------------------------------------------------------------
 BANCO_DE_USUARIOS = {
     "albertojunior22@gmail.com": ["Pensare123", "ativo", "2027-06-20", 1],
     "cliente_teste@gmail.com": ["Mudar123", "ativo", "2027-12-31", 1],
@@ -112,10 +105,6 @@ async def alterar_senha(request: Request):
         return {"status": "erro", "mensagem": str(e)}
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 def _config_leitura_from_dict(d: dict) -> ConfigLeitura:
     return ConfigLeitura(
         unidade=d.get("unidade", "estaca"),
@@ -159,9 +148,6 @@ def _erro_json(status_code: int, e: Exception):
     )
 
 
-# ---------------------------------------------------------------------------
-# Endpoint 1 — análise inicial dos arquivos Excel
-# ---------------------------------------------------------------------------
 @app.post("/analisar-arquivos")
 async def analisar_arquivos(
     payload: str = Form(...),
@@ -173,7 +159,6 @@ async def analisar_arquivos(
         with tempfile.TemporaryDirectory() as tmpdir:
             arquivos = _salvar_uploads(tmpdir, files, dados.get("arquivos", []))
             config = _config_leitura_from_dict(dados.get("config_leitura", {}))
-
             projeto = ler_multiplos_arquivos(arquivos, config)
 
             mats = set()
@@ -190,9 +175,6 @@ async def analisar_arquivos(
         return _erro_json(500, e)
 
 
-# ---------------------------------------------------------------------------
-# Endpoint 2 — distribuição principal
-# ---------------------------------------------------------------------------
 @app.post("/processar-distribuicao")
 async def processar_distribuicao(
     payload: str = Form(...),
@@ -219,10 +201,8 @@ async def processar_distribuicao(
             projeto = ler_multiplos_arquivos(arquivos, config_leitura)
 
             resultados = []
-
             for ramo in projeto.ramos:
                 p = params.get(ramo.nome, list(params.values())[0]) if isinstance(params, dict) else params
-
                 res = detectar_trechos(
                     ramo,
                     mapeamento,
@@ -230,7 +210,6 @@ async def processar_distribuicao(
                     unidade=config_leitura.unidade,
                     restricoes=config_restricoes,
                 )
-
                 resultados.append(res)
 
             resultado = distribuir(
@@ -256,7 +235,6 @@ async def processar_distribuicao(
             )
 
             arquivos_json = []
-
             for meta, arq in zip(dados.get("arquivos", []), arquivos):
                 arquivos_json.append({
                     "caminho": meta.get("caminho", meta.get("nome", arq["nome_original"])),
@@ -296,9 +274,6 @@ async def processar_distribuicao(
         return _erro_json(500, e)
 
 
-# ---------------------------------------------------------------------------
-# Endpoint 3 — redistribuição entre segmentos
-# ---------------------------------------------------------------------------
 @app.post("/redistribuir-segmentos")
 async def redistribuir_segmentos(
     payload: str = Form(...),
@@ -337,7 +312,6 @@ async def redistribuir_segmentos(
             segmentos = [carregar_segmento(c) for c in caminhos_json]
 
             relacoes = []
-
             for r in dados.get("relacoes", []):
                 relacoes.append(RelacaoSegmento(
                     seg_a=r.get("seg_a", ""),
@@ -396,10 +370,19 @@ async def redistribuir_segmentos(
                     relacoes=relacoes,
                 )
 
-                salvar_json_redistribuido(seg, linhas, json_out)
+                json_salvo = salvar_json_redistribuido(seg, linhas, json_out)
 
-                arquivos_gerados.append(excel_out)
-                arquivos_gerados.append(json_out)
+                if os.path.exists(excel_out):
+                    arquivos_gerados.append(excel_out)
+                else:
+                    print(f"AVISO: Excel redistribuído não encontrado para {seg.nome}: {excel_out}")
+
+                if json_salvo and os.path.exists(json_salvo):
+                    arquivos_gerados.append(json_salvo)
+                elif os.path.exists(json_out):
+                    arquivos_gerados.append(json_out)
+                else:
+                    print(f"AVISO: JSON redistribuído não encontrado para {seg.nome}: {json_out}")
 
             sessao_out = os.path.join(pasta_saida, "sessao_redistribuicao.json")
 
@@ -411,13 +394,22 @@ async def redistribuir_segmentos(
                 bfae=bfae_sessao,
             )
 
-            arquivos_gerados.append(sessao_out)
+            if os.path.exists(sessao_out):
+                arquivos_gerados.append(sessao_out)
+            else:
+                print(f"AVISO: sessão não encontrada: {sessao_out}")
+
+            if not arquivos_gerados:
+                raise RuntimeError("Nenhum arquivo foi gerado pela redistribuição.")
 
             zip_buffer = io.BytesIO()
 
             with zipfile.ZipFile(zip_buffer, "w", compression=zipfile.ZIP_DEFLATED) as z:
                 for arq in arquivos_gerados:
-                    z.write(arq, arcname=os.path.basename(arq))
+                    if os.path.exists(arq):
+                        z.write(arq, arcname=os.path.basename(arq))
+                    else:
+                        print(f"AVISO: arquivo não encontrado no ZIP: {arq}")
 
             zip_buffer.seek(0)
 
